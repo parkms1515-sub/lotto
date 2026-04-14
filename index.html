@@ -1,76 +1,197 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>로또 명당 지도 (최적화 버전)</title>
+    <title>로또 전국 명당 지도</title>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-
     <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.4.1/dist/MarkerCluster.css" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.4.1/dist/MarkerCluster.Default.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.css" />
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://unpkg.com/leaflet.markercluster@1.4.1/dist/leaflet.markercluster.js"></script>
+    <script src="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.js"></script>
 
     <style>
-        body { margin: 0; padding: 0; }
-        #map { width: 100%; height: 100vh; background-color: #f0f0f0; } 
+        body { margin: 0; padding: 0; font-family: 'Malgun Gothic', sans-serif; overflow: hidden; }
+        #map { width: 100%; height: 100vh; background-color: #f0f0f0; }
+        
+        .btn-group {
+            position: absolute; 
+            top: 70px; /* 20px에서 70px로 변경하여 검색창 아래로 내림 */
+            right: 10px; 
+            z-index: 2000;
+            display: flex; 
+            flex-direction: column; 
+            gap: 8px;
+        }
+
+        .location-btn {
+            background: #007bff; color: white; padding: 12px 20px; 
+            border: none; border-radius: 25px; cursor: pointer; 
+            font-weight: bold; font-size: 14px; box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+        }
+        .special-btn { background: #e74c3c; }
+
+        #slider-container {
+            position: absolute; bottom: 20px; left: 0; width: 100%; height: 160px;
+            z-index: 1000; display: flex; overflow-x: auto; padding: 10px;
+            box-sizing: border-box; gap: 15px; scrollbar-width: none;
+        }
+        #slider-container::-webkit-scrollbar { display: none; }
+
+        .card {
+            flex: 0 0 260px; background: white; border-radius: 12px; padding: 15px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2); cursor: pointer;
+            display: flex; flex-direction: column; justify-content: center;
+        }
+        .card h4 { margin: 0 0 5px 0; font-size: 16px; color: #333; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .card p { margin: 0; font-size: 12px; color: #666; line-height: 1.4; }
+        .card .distance { font-size: 13px; color: #007bff; margin-top: 8px; font-weight: bold; }
+        .card .win-info { font-size: 13px; color: #e74c3c; font-weight: bold; margin-top: 2px; }
+
+        .my-custom-marker {
+            border-radius: 50%; color: white; font-weight: 900;
+            display: flex; align-items: center; justify-content: center;
+            box-shadow: 0 3px 10px rgba(0,0,0,0.4); text-shadow: 1px 1px 2px rgba(0,0,0,0.5);
+        }
+        .marker-level-low { background: #3498db !important; border: 2px solid #fff; }
+        .marker-level-med { background: #f39c12 !important; border: 2px solid #fff; box-shadow: 0 0 15px rgba(243, 156, 18, 0.6); }
+        .marker-level-high { background: #c0392b !important; border: 3px solid #ffd700; box-shadow: 0 0 20px rgba(192, 57, 43, 0.8), inset 0 0 10px rgba(0,0,0,0.3); }
     </style>
 </head>
 <body>
 
     <div id="map"></div>
+    
+    <div class="btn-group">
+        <button class="location-btn" onclick="findNearest('all')">📍 주변 모든 판매점</button>
+        <button class="location-btn special-btn" onclick="findNearest('special')">🔥 주변 당첨 명당</button>
+    </div>
+
+    <div id="slider-container"></div>
 
     <script>
-        // 1. 지도 초기화 (preferCanvas: true 옵션으로 성능 향상)
-        var map = L.map('map', {
-            preferCanvas: true 
-        }).setView([36.5, 127.5], 7);
+        var map, markers;
+        var allShops = [];
+        var currentFilter = 'all';
 
-        // 2. 배경 지도 설정 (OpenStreetMap)
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            attribution: '&copy; OpenStreetMap contributors'
-        }).addTo(map);
+        // 3. 지도가 라이브러리 로드 후 안전하게 초기화되도록 설정
+        window.onload = function() {
+            // 맵 초기화
+            map = L.map('map', { preferCanvas: true }).setView([36.5, 127.5], 7);
+            
+            // 클러스터 그룹 초기화
+            if (typeof L.markerClusterGroup === 'function') {
+                markers = L.markerClusterGroup();
+            } else {
+                alert("라이브러리 로드 오류가 발생했습니다. 페이지를 새로고침 해주세요.");
+                return;
+            }
 
-        // 3. 마커 클러스터 그룹 생성
-        var markers = L.markerClusterGroup();
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '&copy; OSM'
+            }).addTo(map);
 
-        // 4. 데이터 불러오기
-        fetch('lotto.geojson')
-            .then(response => {
-                if (!response.ok) throw new Error('파일을 찾을 수 없습니다.');
-                return response.json();
-            })
-            .then(data => {
-                console.log("데이터 로드 완료: " + data.features.length + "개");
+            L.Control.geocoder({ defaultMarkGeocode: false, placeholder: "동네/주소 검색" })
+                .on('markgeocode', e => map.setView(e.geocode.center, 15)).addTo(map);
 
-                // 5. 데이터 반복 처리
-                data.features.forEach(function(feature) {
-                    var lat = parseFloat(feature.properties.yy);
-                    var lng = parseFloat(feature.properties.xx);
+            // 위치 찾기 이벤트 리스너 등록
+            map.on('locationfound', onLocationFound);
+            map.on('locationerror', () => alert("위치 정보를 가져올 수 없습니다."));
+
+            loadLottoDB();
+        };
+
+        async function loadLottoDB() {
+            try {
+                const response = await fetch('lottodb.geojson');
+                const data = await response.json();
+                const items = data.features || data;
+
+                items.forEach(item => {
+                    const prop = item.properties || item;
+                    const lat = parseFloat(prop.yy); 
+                    const lng = parseFloat(prop.xx);
 
                     if (!isNaN(lat) && !isNaN(lng)) {
-                        // 상호명과 주소 추출
-                        var name = feature.properties.field2 || "이름 없음";
-                        var addr = feature.properties.field3 || "주소 없음";
-
-                        // 마커 생성 및 팝업 설정
-                        var marker = L.marker([lat, lng]);
-                        marker.bindPopup("<b>" + name + "</b><br>" + addr);
+                        const name = prop.판매점 || "로또 판매점";
+                        const addr = prop.도로명 || prop.지번 || "";
+                        const winCount = parseInt(prop.당첨횟수) || 0;
                         
-                        // 클러스터 그룹에 추가
+                        let marker;
+                        if (winCount > 0) {
+                            let levelClass = 'marker-level-low'; let size = 28;
+                            if(winCount >= 15) { levelClass = 'marker-level-high'; size = 52; }
+                            else if(winCount >= 5) { levelClass = 'marker-level-med'; size = 40; }
+                            
+                            const specialIcon = L.divIcon({
+                                html: `<div>${winCount}</div>`,
+                                className: `my-custom-marker ${levelClass}`,
+                                iconSize: [size, size], iconAnchor: [size/2, size/2]
+                            });
+                            marker = L.marker([lat, lng], { icon: specialIcon, zIndexOffset: 1000 });
+                            marker.bindPopup(`<b>🔥 1등 명당: ${name}</b><br>${addr}<br><b>당첨횟수: ${winCount}회</b>`);
+                        } else {
+                            marker = L.marker([lat, lng]);
+                            marker.bindPopup(`<b>${name}</b><br>${addr}`);
+                        }
+
                         markers.addLayer(marker);
+                        allShops.push({ name, addr, winCount, latlng: L.latLng(lat, lng), marker });
                     }
                 });
-
-                // 6. 클러스터 그룹을 지도에 표시
                 map.addLayer(markers);
-                console.log("지도 표시 완료");
-            })
-            .catch(error => {
-                console.error('에러 발생:', error);
-                alert('데이터를 불러오는 중 오류가 발생했습니다. 콘솔을 확인하세요.');
+            } catch (err) { console.error("데이터 로딩 에러:", err); }
+        }
+
+        function findNearest(type) {
+            currentFilter = type;
+            map.locate({setView: true, maxZoom: 15});
+        }
+
+        function onLocationFound(e) {
+            const myLoc = e.latlng;
+            let targets = allShops;
+            
+            if (currentFilter === 'special') {
+                targets = allShops.filter(shop => shop.winCount > 0);
+            }
+
+            targets.forEach(shop => {
+                shop.distance = myLoc.distanceTo(shop.latlng);
             });
+
+            const closest = [...targets].sort((a, b) => a.distance - b.distance).slice(0, 5);
+            const container = document.getElementById('slider-container');
+            container.innerHTML = '';
+            
+            if (closest.length === 0) {
+                container.innerHTML = '<div class="card"><h4>주변에 조건에 맞는 판매점이 없습니다.</h4></div>';
+                return;
+            }
+
+            closest.forEach(shop => {
+                const km = (shop.distance / 1000).toFixed(2);
+                const card = document.createElement('div');
+                card.className = 'card';
+                card.innerHTML = `
+                    <h4>${shop.name}</h4>
+                    <p>${shop.addr}</p>
+                    ${shop.winCount > 0 ? `<div class="win-info">1등 당첨: ${shop.winCount}회</div>` : ''}
+                    <div class="distance">📍 약 ${km}km</div>
+                `;
+                card.onclick = () => {
+                    map.setView(shop.latlng, 17);
+                    shop.marker.openPopup();
+                };
+                container.appendChild(card);
+            });
+            
+            L.circle(myLoc, {radius: 50, color: 'blue', fillOpacity: 0.5}).addTo(map);
+        }
     </script>
 </body>
 </html>
